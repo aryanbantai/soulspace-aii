@@ -10,7 +10,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const genAI = new GoogleGenerativeAI("AIzaSyByWXVZb5djcppvijJngsK79oOiYhdLrtY");
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const model = genAI.getGenerativeModel({
   model: 'gemini-2.0-flash',

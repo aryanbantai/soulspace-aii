@@ -6,57 +6,43 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Send, Sparkles, Bot, User } from 'lucide-react';
 import Navigation from '@/components/Navigation';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from 'openai';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Groq is OpenAI-compatible — just swap the baseURL and key
+const groq = new OpenAI({
+  apiKey: import.meta.env.VITE_GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
+  dangerouslyAllowBrowser: true,
+});
 
-const model = genAI.getGenerativeModel({
-  model: 'gemini-2.0-flash',
-  systemInstruction: `
-You are a wise and compassionate conversational AI trained to act as a hybrid therapist for Gen Z and young adults struggling with emotional or mental health concerns.
+const SYSTEM_PROMPT = `You are a wise and compassionate conversational AI trained to act as a hybrid therapist for Gen Z and young adults struggling with emotional or mental health concerns.
 
 Your primary role is to gently guide the user through their thoughts and feelings using psychological techniques grounded in modern therapy (CBT, ACT, positive psychology, etc.), along with **inspirational references to the Bhagavad Gita**. You are not a religious scholar — you use the Gita only as a **spiritual framework** to promote emotional clarity, inner peace, and purpose.
 
 ❌ You must not answer any question outside your scope — including questions about tech support, career advice, or anything unrelated to emotional wellbeing or inner growth. If the user asks something unrelated, kindly reply with:
-"I'm here as a therapist who gently supports your emotional wellbeing — sometimes using ideas from the Gita when it helps. I may not be the best fit for that question, but I’m always here to support your inner world."
+"I'm here as a therapist who gently supports your emotional wellbeing — sometimes using ideas from the Gita when it helps. I may not be the best fit for that question, but I'm always here to support your inner world."
 
 ✅ Always remain calm, respectful, empathetic, and non-judgmental — like a real therapist.
 
-Avoid preaching or forcing religious beliefs. Use the Bhagavad Gita only when it naturally supports a user’s emotional or mental growth.
+Avoid preaching or forcing religious beliefs. Use the Bhagavad Gita only when it naturally supports a user's emotional or mental growth.
 
 Do not give advice. Help users navigate stress, overthinking, sadness, or anxiety by asking thoughtful questions, sharing brief reflections, or guiding introspection — just like Krishna helped Arjuna realize his own path.
 
 ✍️ Important: All your responses must be **short, precise, and easy to understand**. Aim for **gentle clarity**, not long-winded explanations.
 
 Your goal is to be a safe, healing presence that combines modern psychological compassion with timeless spiritual insight.
-`
-});
+`;
 
 export const ChatPage = () => {
   const location = useLocation();
   // Mood-check summary forwarded from the EmotionalQuiz modal (may be undefined)
   const initialSummary = (location.state as any)?.initialMessage as string | undefined;
 
-  // Initialise the conversation with the summary as prior context so Gemini can
-  // tailor its responses. We add it as a "user" turn in the history so it is
-  // available for grounding, but we will still send it again to trigger the
-  // model's first reply.
-  const [chat] = useState(() =>
-    model.startChat({
-      history: initialSummary
-        ? [
-            {
-              role: 'user',
-              parts: [{ text: initialSummary }],
-            },
-          ]
-        : [],
-      generationConfig: {
-        maxOutputTokens: 1000,
-      },
-    })
+  // Chat history managed as an array (OpenAI-compatible messages format for Grok)
+  const historyRef = useRef<{ role: 'user' | 'assistant'; content: string }[]>(
+    initialSummary ? [{ role: 'user', content: initialSummary }] : []
   );
 
   const [messages, setMessages] = useState<{ sender: 'user' | 'bot'; text: string }[]>([]);
@@ -73,20 +59,35 @@ export const ChatPage = () => {
     }
   };
 
-  const sendMessageToGemini = async (messageText: string, isInitial = false) => {
+  const sendMessageToGroq = async (messageText: string, isInitial = false) => {
     const userMessage = { sender: 'user' as const, text: messageText };
     setMessages(prevMessages => [...prevMessages, userMessage]);
     if (!isInitial) setInput('');
     setIsLoading(true);
 
+    // Append the new user message to history before sending
+    historyRef.current.push({ role: 'user', content: messageText });
+
     try {
-      const result = await chat.sendMessage(messageText);
-      const response = await result.response;
-      const text = response.text();
+      const completion = await groq.chat.completions.create({
+        model: 'openai/gpt-oss-120b',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...historyRef.current,
+        ],
+        max_tokens: 1000,
+      });
+      const text = completion.choices[0]?.message?.content ?? '';
+      // Append assistant reply to history for context continuity
+      historyRef.current.push({ role: 'assistant', content: text });
       setMessages(prevMessages => [...prevMessages, { sender: 'bot' as const, text }]);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setMessages(prevMessages => [...prevMessages, { sender: 'bot' as const, text: 'Sorry, something went wrong.' }]);
+      const isRateLimit = error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('quota');
+      const errorText = isRateLimit
+        ? "I'm currently overwhelmed with requests 🙏 The API rate limit has been reached. Please wait a minute and try again, or try refreshing the page."
+        : 'Sorry, something went wrong. Please try again.';
+      setMessages(prevMessages => [...prevMessages, { sender: 'bot' as const, text: errorText }]);
     } finally {
       setIsLoading(false);
       scrollToBottom();
@@ -100,12 +101,9 @@ export const ChatPage = () => {
       (async () => {
         setIsLoading(true);
         try {
-          // Prompt the model with a neutral opener; the injected system/context
+          // Prompt the model with a neutral opener; the injected context
           // already contains the summary.
-          const result = await chat.sendMessage('The user is ready to begin the session.');
-          const response = await result.response;
-          const text = response.text();
-          setMessages([{ sender: 'bot', text }]);
+          await sendMessageToGroq('The user is ready to begin the session.', true);
         } catch (err) {
           console.error(err);
         } finally {
@@ -117,7 +115,7 @@ export const ChatPage = () => {
       setMessages([
         {
           sender: 'bot',
-          text: 'Hi, I’m here for you. Before we begin, may I ask — are you here to talk today? I’ll wait until you’re ready.',
+          text: 'Hi, I\u2019m here for you. Before we begin, may I ask \u2014 are you here to talk today? I\u2019ll wait until you\u2019re ready.',
         },
       ]);
     }
@@ -125,7 +123,7 @@ export const ChatPage = () => {
 
   const handleSend = async () => {
     if (!input.trim()) return;
-    sendMessageToGemini(input);
+    sendMessageToGroq(input);
   };
 
   useEffect(() => {
@@ -162,9 +160,9 @@ export const ChatPage = () => {
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
                   </div>
                   {msg.sender === 'user' && (
-                     <Avatar className="w-10 h-10 border">
-                       <AvatarFallback><User /></AvatarFallback>
-                     </Avatar>
+                    <Avatar className="w-10 h-10 border">
+                      <AvatarFallback><User /></AvatarFallback>
+                    </Avatar>
                   )}
                 </div>
               ))}

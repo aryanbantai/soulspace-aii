@@ -182,7 +182,7 @@ export const SoulspaceWelcome = () => {
         <div className="space-y-6">
           {/* Made by credit */}
           <p className="text-lg font-handwritten text-primary/80 tracking-wide">
-            Made with 💖 by Omkar
+            Made with 💖 by shanee
           </p>
           
           {/* Hope-giving tagline with subtle animation */}
